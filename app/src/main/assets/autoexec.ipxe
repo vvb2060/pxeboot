@@ -1,0 +1,3 @@
+#!ipxe
+
+sanboot http://${proxydhcp/next-server}/winpe.iso
