@@ -1,31 +1,41 @@
 package io.github.vvb2060.pxeboot.server;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+
 public class App {
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         var config = AppConfig.fromArgs(args);
-        var server = new DhcpServer(config);
 
-        var offerThread = new Thread(server::serveOffer, "dhcp-offer");
-        var ackThread = new Thread(server::serveProxy, "proxydhcp-ack");
-        var tftpThread = new Thread(() -> new TftpServer(config).start(), "tftp-server");
-        var httpThread = new Thread(() -> new HttpFileServer(config).start(), "http-server");
+        var runtime = new ServerRuntime(config);
+        runtime.start();
 
-        offerThread.start();
-        ackThread.start();
-        tftpThread.start();
-        httpThread.start();
+        var controlThread = new Thread(() -> readControlInput(runtime), "stdin-control");
+        controlThread.setDaemon(true);
+        controlThread.start();
 
-        System.out.printf(config +"\n");
+        runtime.awaitTermination();
+    }
 
-        try {
-            offerThread.join();
-            ackThread.join();
-            tftpThread.join();
-            httpThread.join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted", e);
+    private static void readControlInput(ServerRuntime runtime) {
+        try (var reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String command = line.trim();
+                if (command.isEmpty()) continue;
+                if ("stop".equals(command)) {
+                    runtime.stop();
+                    return;
+                }
+            }
+
+            System.out.println("Stdin closed, can not terminate the server.");
+        } catch (IOException e) {
+            System.err.println("Control input failed: " + e.getMessage());
+            runtime.stop();
         }
     }
 }

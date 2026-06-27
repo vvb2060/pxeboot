@@ -41,10 +41,11 @@ final class TftpServer {
     private final InetAddress bindAddress;
     private final Path root;
     private final boolean verbose;
+    private DatagramSocket listener;
 
     TftpServer(AppConfig config) {
         this.bindAddress = config.serverIp;
-        this.root = Paths.get(config.fileRoot);
+        this.root = Paths.get(config.tftpRoot);
         this.verbose = config.verbose;
     }
 
@@ -54,20 +55,33 @@ final class TftpServer {
         }
 
         try (var listener = new DatagramSocket(new InetSocketAddress(bindAddress, 69))) {
-            if (verbose) {
-                System.out.printf("TFTP server listening on %s:69 (root=%s)\n", bindAddress, root);
-            }
+            this.listener = listener;
+            System.out.printf("TFTP server listening on %s:69 (root=%s)\n", bindAddress, root);
 
+            byte[] rx = new byte[RX_BUFFER];
             while (!Thread.currentThread().isInterrupted()) {
-                byte[] rx = new byte[RX_BUFFER];
                 var packet = new DatagramPacket(rx, rx.length);
-                listener.receive(packet);
+                try {
+                    listener.receive(packet);
+                } catch (SocketException e) {
+                    if (listener.isClosed()) return;
+                    System.err.println("Socket receive failed: " + e.getMessage());
+                    continue;
+                }
                 handleInitialPacket(packet);
             }
         } catch (SocketException e) {
             throw new RuntimeException("Unable to bind TFTP socket on port 69", e);
         } catch (IOException e) {
             throw new RuntimeException("TFTP listener failed", e);
+        } finally {
+            this.listener = null;
+        }
+    }
+
+    void close() {
+        if (listener != null) {
+            listener.close();
         }
     }
 
@@ -136,13 +150,9 @@ final class TftpServer {
             byte[] content = Files.readAllBytes(target);
             sendFile(transfer, clientAddress, content, blockSize, windowSize, rrq.filename());
         } catch (SocketException e) {
-            if (verbose) {
-                System.err.println("TFTP transfer socket error: " + e.getMessage());
-            }
+            System.err.println("TFTP transfer socket error: " + e.getMessage());
         } catch (IOException e) {
-            if (verbose) {
-                System.err.println("TFTP transfer error: " + e.getMessage());
-            }
+            System.err.println("TFTP transfer error: " + e.getMessage());
         }
     }
 
@@ -199,9 +209,7 @@ final class TftpServer {
             }
         }
 
-        if (verbose) {
-            System.out.printf("TFTP transfer complete file=%s -> %s\n", fileName, clientAddress);
-        }
+        System.out.printf("TFTP transfer complete file=%s -> %s\n", fileName, clientAddress);
     }
 
     private boolean waitAckForWindow(
@@ -225,12 +233,10 @@ final class TftpServer {
 
                 int opcode = readU16(ack.getData(), 0);
                 if (opcode == OP_ERROR) {
-                    if (verbose) {
-                        int errorCode = readU16(ack.getData(), 2);
-                        String errorMsg = readZString(ack.getData(), ack.getLength(), 4);
-                        System.err.printf("TFTP transfer error from %s: code=%d message=%s\n",
-                            clientAddress, errorCode, errorMsg);
-                    }
+                    int errorCode = readU16(ack.getData(), 2);
+                    String errorMsg = readZString(ack.getData(), ack.getLength(), 4);
+                    System.err.printf("TFTP transfer error from %s: code=%d message=%s\n",
+                        clientAddress, errorCode, errorMsg);
                     return false;
                 }
                 if (opcode == OP_ACK) {
@@ -255,9 +261,7 @@ final class TftpServer {
             }
         }
 
-        if (verbose) {
-            System.err.printf("TFTP transfer timeout waiting ACK for blocks %d-%d\n", firstBlock, lastBlock);
-        }
+        System.err.printf("TFTP transfer timeout waiting ACK for blocks %d-%d\n", firstBlock, lastBlock);
         return false;
     }
 
@@ -278,12 +282,10 @@ final class TftpServer {
 
                 int opcode = readU16(ack.getData(), 0);
                 if (opcode == OP_ERROR) {
-                    if (verbose) {
-                        int errorCode = readU16(ack.getData(), 2);
-                        String errorMsg = readZString(ack.getData(), ack.getLength(), 4);
-                        System.err.printf("TFTP OACK error from %s: code=%d message=%s\n",
-                            clientAddress, errorCode, errorMsg);
-                    }
+                    int errorCode = readU16(ack.getData(), 2);
+                    String errorMsg = readZString(ack.getData(), ack.getLength(), 4);
+                    System.err.printf("TFTP OACK error from %s: code=%d message=%s\n",
+                        clientAddress, errorCode, errorMsg);
                     return false;
                 }
                 if (opcode == OP_ACK) {
@@ -297,9 +299,7 @@ final class TftpServer {
             }
         }
 
-        if (verbose) {
-            System.err.printf("TFTP timeout waiting ACK for OACK from %s\n", clientAddress);
-        }
+        System.err.printf("TFTP timeout waiting ACK for OACK from %s\n", clientAddress);
         return false;
     }
 
@@ -334,10 +334,8 @@ final class TftpServer {
         }
 
         socket.send(new DatagramPacket(payload, payload.length, clientAddress));
-        if (verbose) {
-            System.out.printf("TFTP OACK -> %s (blksize=%d windowsize=%d tsize=%d)\n",
-                clientAddress, rrq.blockSize(), rrq.windowSize(), fileSize);
-        }
+        System.out.printf("TFTP OACK -> %s (blksize=%d windowsize=%d tsize=%d)\n",
+            clientAddress, rrq.blockSize(), rrq.windowSize(), fileSize);
     }
 
     private void sendError(SocketAddress address, int code, String message) {

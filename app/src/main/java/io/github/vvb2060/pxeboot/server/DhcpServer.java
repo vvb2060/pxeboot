@@ -9,33 +9,47 @@ import java.net.SocketException;
 import java.util.Arrays;
 import java.util.Optional;
 
-public final class DhcpServer {
+final class DhcpServer {
     private static final int DHCP_MIN_PACKET_SIZE = 300;
 
     private final AppConfig config;
 
-    public DhcpServer(AppConfig config) {
+    private DatagramSocket offerSocket;
+    private DatagramSocket proxySocket;
+
+    DhcpServer(AppConfig config) {
         this.config = config;
     }
 
-    public void serveOffer() {
-        try {
-            try (var socket = new DatagramSocket(new InetSocketAddress(config.serverIp, 67))) {
-                socket.setBroadcast(true);
-                runLoop(socket, false);
-            }
+    void serveOffer() {
+        try (var socket = new DatagramSocket(new InetSocketAddress(config.serverIp, 67))) {
+            offerSocket = socket;
+            socket.setBroadcast(true);
+            runLoop(socket, false);
         } catch (SocketException e) {
             throw new RuntimeException("Unable to bind DHCP socket on port 67", e);
+        } finally {
+            offerSocket = null;
         }
     }
 
-    public void serveProxy() {
-        try {
-            try (var socket = new DatagramSocket(new InetSocketAddress(config.serverIp, 4011))) {
-                runLoop(socket, true);
-            }
+    void serveProxy() {
+        try (var socket = new DatagramSocket(new InetSocketAddress(config.serverIp, 4011))) {
+            proxySocket = socket;
+            runLoop(socket, true);
         } catch (SocketException e) {
             throw new RuntimeException("Unable to bind ProxyDHCP socket on port 4011", e);
+        } finally {
+            proxySocket = null;
+        }
+    }
+
+    void close() {
+        if (offerSocket != null) {
+            offerSocket.close();
+        }
+        if (proxySocket != null) {
+            proxySocket.close();
         }
     }
 
@@ -47,6 +61,7 @@ public final class DhcpServer {
             try {
                 socket.receive(datagram);
             } catch (IOException e) {
+                if (socket.isClosed()) return;
                 System.err.println("Socket receive failed: " + e.getMessage());
                 continue;
             }
@@ -55,9 +70,7 @@ public final class DhcpServer {
             try {
                 request = DhcpPacket.parse(datagram.getData(), datagram.getLength());
             } catch (IllegalArgumentException e) {
-                if (config.verbose) {
-                    System.out.println("Ignored non-DHCP packet: " + e.getMessage());
-                }
+                System.out.println("Ignored non-DHCP packet: " + e.getMessage());
                 continue;
             }
 
@@ -85,10 +98,8 @@ public final class DhcpServer {
             if (proxy && msgType == DhcpPacket.MSG_REQUEST) {
                 var profile = classifyClient(request);
                 if (profile.isEmpty()) {
-                    if (config.verbose) {
-                        System.out.printf("Ignored request xid=0x%08x: vendorClass=%s\n",
-                            request.xid, vendorClass);
-                    }
+                    System.out.printf("Ignored request xid=0x%08x: vendorClass=%s\n",
+                        request.xid, vendorClass);
                     continue;
                 }
                 sendProxyAck(socket, request, datagram.getSocketAddress(), profile.get());
@@ -177,9 +188,7 @@ public final class DhcpServer {
         try {
             DatagramPacket response = new DatagramPacket(payload, payload.length, address);
             socket.send(response);
-            if (config.verbose) {
-                System.out.printf("Sent %s xid=0x%08x -> %s (%d bytes)\n", kind, xid, address, payload.length);
-            }
+            System.out.printf("Sent %s xid=0x%08x -> %s (%d bytes)\n", kind, xid, address, payload.length);
         } catch (IOException e) {
             System.err.printf("Failed to send %s xid=0x%08x: %s\n", kind, xid, e.getMessage());
         }
@@ -193,6 +202,7 @@ public final class DhcpServer {
 
         final String label;
         final String bootFile;
+
         ClientProfile(String label, String bootFile) {
             this.label = label;
             this.bootFile = bootFile;

@@ -6,13 +6,15 @@ import java.net.UnknownHostException;
 
 public final class AppConfig {
     final InetAddress serverIp;
-    final String fileRoot;
+    final String tftpRoot;
+    final String httpRoot;
     final int httpPort;
     final boolean verbose;
 
-    private AppConfig(InetAddress serverIp, String fileRoot, int httpPort, boolean verbose) {
+    private AppConfig(InetAddress serverIp, String tftpRoot, String httpRoot, int httpPort, boolean verbose) {
         this.serverIp = serverIp;
-        this.fileRoot = fileRoot;
+        this.tftpRoot = tftpRoot;
+        this.httpRoot = httpRoot;
         this.httpPort = httpPort;
         this.verbose = verbose;
     }
@@ -30,7 +32,8 @@ public final class AppConfig {
 
     static AppConfig fromArgs(String[] args) {
         String serverIp = "192.168.1.184";
-        String fileRoot = "src/main/assets";
+        String tftpRoot = "src/main/assets";
+        String httpRoot = "src/main/assets";
         int httpPort = 80;
         boolean verbose = true;
 
@@ -44,7 +47,8 @@ public final class AppConfig {
             var value = parts[1];
             switch (key) {
                 case "server-ip" -> serverIp = value;
-                case "file-root" -> fileRoot = value;
+                case "tftp-root" -> tftpRoot = value;
+                case "http-root" -> httpRoot = value;
                 case "http-port" -> httpPort = Integer.parseInt(value);
                 case "verbose" -> verbose = Boolean.parseBoolean(value);
                 default -> {
@@ -52,16 +56,6 @@ public final class AppConfig {
             }
         }
 
-        return new AppConfig(ipv4(serverIp), fileRoot, httpPort, verbose);
+        return new AppConfig(ipv4(serverIp), tftpRoot, httpRoot, httpPort, verbose);
     }
-
-    @Override
-    public String toString() {
-        return "AppConfig[" +
-            "serverIp=" + serverIp + ", " +
-            "fileRoot=" + fileRoot + ", " +
-            "httpPort=" + httpPort + ", " +
-            "verbose=" + verbose + ']';
-    }
-
 }

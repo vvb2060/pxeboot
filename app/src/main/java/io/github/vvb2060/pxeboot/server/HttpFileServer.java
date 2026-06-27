@@ -31,12 +31,11 @@ final class HttpFileServer {
     private final int port;
     private final Path root;
     private final boolean verbose;
-    private Selector selector;
 
     HttpFileServer(AppConfig config) {
         this.bindAddress = config.serverIp;
         this.port = config.httpPort;
-        this.root = Paths.get(config.fileRoot);
+        this.root = Paths.get(config.httpRoot);
         this.verbose = config.verbose;
     }
 
@@ -45,16 +44,13 @@ final class HttpFileServer {
             throw new RuntimeException(root + " is not a directory");
         }
 
-        try {
-            selector = Selector.open();
-            var server = ServerSocketChannel.open();
+        try (var selector = Selector.open();
+             var server = ServerSocketChannel.open()) {
             server.bind(new InetSocketAddress(bindAddress, port));
             server.configureBlocking(false);
             server.register(selector, SelectionKey.OP_ACCEPT);
 
-            if (verbose) {
-                System.out.printf("HTTP file server listening on %s:%d (root=%s)\n", bindAddress, port, root);
-            }
+            System.out.printf("HTTP file server listening on %s:%d (root=%s)\n", bindAddress, port, root);
 
             while (!Thread.currentThread().isInterrupted()) {
                 selector.select();
@@ -69,7 +65,7 @@ final class HttpFileServer {
 
                     try {
                         if (key.isAcceptable()) {
-                            handleAccept(server);
+                            handleAccept(selector, server);
                         } else if (key.isReadable()) {
                             handleRead(key);
                         } else if (key.isWritable()) {
@@ -85,14 +81,12 @@ final class HttpFileServer {
         }
     }
 
-    private void handleAccept(ServerSocketChannel server) throws IOException {
+    private void handleAccept(Selector selector, ServerSocketChannel server) throws IOException {
         var client = server.accept();
         if (client != null) {
             client.configureBlocking(false);
             client.register(selector, SelectionKey.OP_READ, new ClientContext());
-            if (verbose) {
-                System.out.println("Accepted connection from " + client.socket().getRemoteSocketAddress());
-            }
+            System.out.println("Accepted connection from " + client.socket().getRemoteSocketAddress());
         }
     }
 
