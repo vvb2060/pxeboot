@@ -1,3 +1,5 @@
--repackageclasses
--allowaccessmodification
 -overloadaggressively
+
+-keepclassmembers class io.github.vvb2060.pxeboot.server.App{
+   public static void main(java.lang.String[]);
+}
