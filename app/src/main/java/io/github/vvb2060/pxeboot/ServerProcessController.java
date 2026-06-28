@@ -190,7 +190,7 @@ final class ServerProcessController {
             + " --tftp-root=" + shellEscape(tftpRoot)
             + " --http-root=" + shellEscape(httpRoot)
             + " --http-port=" + httpPort
-            + (BuildConfig.DEBUG ? " --verbose=true" : "");
+            + " --verbose=" + BuildConfig.DEBUG;
     }
 
     private static String shellEscape(String value) {

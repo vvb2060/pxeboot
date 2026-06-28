@@ -27,7 +27,7 @@ final class DhcpServer {
             socket.setBroadcast(true);
             runLoop(socket, false);
         } catch (SocketException e) {
-            throw new RuntimeException("Unable to bind DHCP socket on port 67", e);
+            throw new RuntimeException("Unable to bind DHCP socket on port 67: " + e.getMessage(), e);
         } finally {
             offerSocket = null;
         }
@@ -38,7 +38,7 @@ final class DhcpServer {
             proxySocket = socket;
             runLoop(socket, true);
         } catch (SocketException e) {
-            throw new RuntimeException("Unable to bind ProxyDHCP socket on port 4011", e);
+            throw new RuntimeException("Unable to bind ProxyDHCP socket on port 4011: " + e.getMessage(), e);
         } finally {
             proxySocket = null;
         }

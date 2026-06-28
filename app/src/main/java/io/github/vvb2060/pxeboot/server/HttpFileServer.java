@@ -77,7 +77,7 @@ final class HttpFileServer {
                 }
             }
         } catch (IOException e) {
-            throw new RuntimeException("Server runtime error on port " + port, e);
+            throw new RuntimeException("HTTP server error on port " + port + ": " + e.getMessage(), e);
         }
     }
 
@@ -127,6 +127,11 @@ final class HttpFileServer {
 
             String connHeader = request.headers.get("connection");
             ctx.keepAlive = connHeader != null && "keep-alive".equalsIgnoreCase(connHeader.trim());
+
+            if (verbose) {
+                System.out.printf("HTTP %s %s from %s\n", request.method, request.path,
+                        client.socket().getRemoteSocketAddress());
+            }
 
             prepareFileResponse(key, ctx, request);
         }

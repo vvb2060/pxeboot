@@ -71,9 +71,9 @@ final class TftpServer {
                 handleInitialPacket(packet);
             }
         } catch (SocketException e) {
-            throw new RuntimeException("Unable to bind TFTP socket on port 69", e);
+            throw new RuntimeException("Unable to bind TFTP socket on port 69: " + e.getMessage(), e);
         } catch (IOException e) {
-            throw new RuntimeException("TFTP listener failed", e);
+            throw new RuntimeException("TFTP listener failed: " + e.getMessage(), e);
         } finally {
             this.listener = null;
         }
@@ -243,6 +243,9 @@ final class TftpServer {
                     int ackBlock = readU16(ack.getData(), 2);
                     if (inBlockRange(ackBlock, firstBlock, lastBlock)) {
                         if (ackBlock == lastBlock) {
+                            if (verbose) {
+                                System.out.printf("TFTP ACK block=%d <- %s\n", ackBlock, clientAddress);
+                            }
                             return true;
                         } else {
                             var ackedCount = (ackBlock - firstBlock + 1) & 0xFFFF;
