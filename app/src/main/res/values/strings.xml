@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="label_tftp_root">TFTP root</string>
+    <string name="label_server_ip">Server IP</string>
+    <string name="label_http_root">HTTP root</string>
+    <string name="label_http_port">HTTP port</string>
+    <string name="label_autoexec">autoexec.ipxe</string>
+    <string name="action_save_autoexec">Save autoexec.ipxe</string>
+    <string name="save_success">autoexec.ipxe saved</string>
+    <string name="save_failed">Failed to save autoexec.ipxe</string>
+    <string name="action_start_service">Start Service</string>
+    <string name="action_stop_service">Stop Service</string>
+</resources>

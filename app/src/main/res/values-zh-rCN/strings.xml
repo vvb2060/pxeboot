@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="label_tftp_root">TFTP 根目录</string>
+    <string name="label_server_ip">服务器 IP</string>
+    <string name="label_http_root">HTTP 根目录</string>
+    <string name="label_http_port">HTTP 端口</string>
+    <string name="label_autoexec">autoexec.ipxe</string>
+    <string name="action_save_autoexec">保存 autoexec.ipxe</string>
+    <string name="save_success">autoexec.ipxe 已保存</string>
+    <string name="save_failed">保存 autoexec.ipxe 失败</string>
+    <string name="action_start_service">启动服务</string>
+    <string name="action_stop_service">停止服务</string>
+</resources>

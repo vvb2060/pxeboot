@@ -15,7 +15,6 @@ pluginManagement {
         id("com.android.application") version agp
         id("com.android.library") version agp
         id("com.android.settings") version agp
-        id("com.android.lint") version agp
     }
 }
 
@@ -50,7 +49,6 @@ android {
         version = release(37)
     }
     buildToolsVersion = "37.0.0"
-    ndkVersion = "29.0.14206865"
 }
 
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
