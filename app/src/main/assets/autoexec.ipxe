@@ -7,7 +7,7 @@
 #chain --autofree https://boot.netboot.xyz/menu.ipxe
 
 # boot from network debian
-set mirror https://mirrors.cernet.edu.cn/debian/
+set mirror https://cdimage.debian.org/debian
 set installer ${mirror}/dists/stable/main/installer-amd64/current/images/netboot/gtk/debian-installer/amd64
 kernel ${installer}/linux
 initrd ${installer}/initrd.gz
