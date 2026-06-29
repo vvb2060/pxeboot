@@ -32,7 +32,7 @@ public class MainActivity extends Activity implements ServerProcessController.Li
 
     private View configContainer;
     private View runningContainer;
-    private TextView tftpRootView;
+    private EditText tftpRootEdit;
     private Spinner serverIpSpinner;
     private EditText httpRootEdit;
     private EditText httpPortEdit;
@@ -89,7 +89,7 @@ public class MainActivity extends Activity implements ServerProcessController.Li
 
         configContainer = findViewById(R.id.config_container);
         runningContainer = findViewById(R.id.running_container);
-        tftpRootView = findViewById(R.id.tftp_root_view);
+        tftpRootEdit = findViewById(R.id.tftp_root_edit);
         serverIpSpinner = findViewById(R.id.server_ip_spinner);
         httpRootEdit = findViewById(R.id.http_root_edit);
         httpPortEdit = findViewById(R.id.http_port_edit);
@@ -106,7 +106,7 @@ public class MainActivity extends Activity implements ServerProcessController.Li
         serverIpSpinner.setAdapter(adapter);
 
         var httpRootDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        tftpRootView.setText(tftpRootDir.getAbsolutePath());
+        tftpRootEdit.setText(tftpRootDir.getAbsolutePath());
         httpRootEdit.setText(httpRootDir.getAbsolutePath());
         httpPortEdit.setText("80");
 
@@ -154,7 +154,7 @@ public class MainActivity extends Activity implements ServerProcessController.Li
 
     private void startServer() {
         var context = getApplicationContext();
-        String tftpRoot = tftpRootView.getText().toString();
+        String tftpRoot = tftpRootEdit.getText().toString();
         String httpRoot = httpRootEdit.getText().toString();
         String httpPort = httpPortEdit.getText().toString();
         String serverIp = (String) serverIpSpinner.getSelectedItem();

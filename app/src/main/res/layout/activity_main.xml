@@ -38,7 +38,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:inputType="numberDecimal" />
+                android:inputType="number" />
 
             <TextView
                 android:layout_width="match_parent"
@@ -61,7 +61,7 @@
                 android:text="@string/label_tftp_root" />
 
             <EditText
-                android:id="@+id/tftp_root_view"
+                android:id="@+id/tftp_root_edit"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
