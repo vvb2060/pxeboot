@@ -1,5 +1,6 @@
 package io.github.vvb2060.pxeboot.server;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -22,9 +23,16 @@ final class DhcpServer {
     }
 
     void serveOffer() {
-        try (var socket = new DatagramSocket(new InetSocketAddress(config.serverIp, 67))) {
+        InetSocketAddress addr;
+        if (File.pathSeparatorChar == ';') {
+            addr = new InetSocketAddress(config.serverIp, 67);
+        } else {
+            addr = new InetSocketAddress(67);
+        }
+        try (var socket = new DatagramSocket(addr)) {
             offerSocket = socket;
             socket.setBroadcast(true);
+            socket.setReuseAddress(true);
             runLoop(socket, false);
         } catch (SocketException e) {
             throw new RuntimeException("Unable to bind DHCP socket on port 67: " + e.getMessage(), e);
