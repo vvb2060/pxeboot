@@ -52,6 +52,11 @@ final class ServerProcessController {
                 notifyListenersLocked();
                 return;
             }
+            if (serverIp == null) {
+                appendLogLocked("Server IP is null.\n");
+                notifyListenersLocked();
+                return;
+            }
 
             logBuffer.setLength(0);
             appendLogLocked("Starting PXE Server...\n");
