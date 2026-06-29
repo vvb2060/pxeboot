@@ -1,3 +1,15 @@
 #!ipxe
 
-sanboot http://${proxydhcp/next-server}/winpe.iso
+# boot from local iso image
+#sanboot http://${proxydhcp/next-server}/winpe.iso
+
+# boot from network menu
+#chain --autofree https://boot.netboot.xyz/menu.ipxe
+
+# boot from network debian
+set mirror https://mirrors.cernet.edu.cn/debian/
+set installer ${mirror}/dists/stable/main/installer-amd64/current/images/netboot/gtk/debian-installer/amd64
+kernel ${installer}/linux
+initrd ${installer}/initrd.gz
+shim ${installer}/bootnetx64.efi
+boot
