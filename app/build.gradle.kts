@@ -52,6 +52,7 @@ androidComponents {
             mainClass.set("io.github.vvb2060.pxeboot.server.App")
             val javaCompileTask = tasks.named<JavaCompile>("compile${variantCapped}JavaWithJavac")
             classpath = files(javaCompileTask.map { it.destinationDirectory })
+            standardInput = System.`in`
             dependsOn(javaCompileTask)
         }
     }

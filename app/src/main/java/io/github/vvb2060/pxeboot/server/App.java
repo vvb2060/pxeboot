@@ -32,7 +32,8 @@ public class App {
                 }
             }
 
-            System.out.println("Stdin closed, can not terminate the server.");
+            System.out.println("Stdin closed, terminate the server.");
+            runtime.stop();
         } catch (IOException e) {
             System.err.println("Control input failed: " + e.getMessage());
             runtime.stop();
