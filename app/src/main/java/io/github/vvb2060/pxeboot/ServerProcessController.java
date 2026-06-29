@@ -1,5 +1,8 @@
 package io.github.vvb2060.pxeboot;
 
+import android.content.Context;
+import android.net.wifi.WifiManager;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,6 +28,7 @@ final class ServerProcessController {
 
     private Process process;
     private OutputStream controlStream;
+    private WifiManager.MulticastLock multicastLock;
     private boolean running;
     private boolean stopping;
 
@@ -41,7 +45,7 @@ final class ServerProcessController {
         listeners.remove(listener);
     }
 
-    void start(String apkPath, String serverIp, String tftpRoot, String httpRoot, String httpPort) {
+    void start(Context context, String serverIp, String tftpRoot, String httpRoot, String httpPort) {
         synchronized (lock) {
             if (running) {
                 appendLogLocked("PXE Server is already running.\n");
@@ -53,9 +57,11 @@ final class ServerProcessController {
             appendLogLocked("Starting PXE Server...\n");
 
             try {
+                var apkPath = context.getPackageCodePath();
                 String command = buildCommand(apkPath, serverIp, tftpRoot, httpRoot, httpPort);
                 process = new ProcessBuilder("su", "-c", command).start();
                 controlStream = process.getOutputStream();
+                acquireMulticastLock(context);
                 running = true;
                 stopping = false;
                 notifyListenersLocked();
@@ -178,10 +184,25 @@ final class ServerProcessController {
     }
 
     private void clearProcessLocked() {
+        if (multicastLock != null && multicastLock.isHeld()) {
+            multicastLock.release();
+        }
         running = false;
         stopping = false;
         process = null;
         controlStream = null;
+    }
+
+    private void acquireMulticastLock(Context context) {
+        if (multicastLock != null && multicastLock.isHeld()) {
+            return;
+        }
+        var wifiManager = context.getSystemService(WifiManager.class);
+        if (wifiManager == null) return;
+        var lock = wifiManager.createMulticastLock("pxeboot");
+        lock.setReferenceCounted(false);
+        lock.acquire();
+        multicastLock = lock;
     }
 
     private static String buildCommand(String apkPath, String serverIp,

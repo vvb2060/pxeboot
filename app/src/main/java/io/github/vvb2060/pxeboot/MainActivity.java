@@ -153,14 +153,14 @@ public class MainActivity extends Activity implements ServerProcessController.Li
     }
 
     private void startServer() {
-        String apkPath = getApplicationInfo().sourceDir;
+        var context = getApplicationContext();
         String tftpRoot = tftpRootView.getText().toString();
         String httpRoot = httpRootEdit.getText().toString();
         String httpPort = httpPortEdit.getText().toString();
         String serverIp = (String) serverIpSpinner.getSelectedItem();
 
         showRunningUi(true);
-        ioExecutor.execute(() -> controller.start(apkPath, serverIp, tftpRoot, httpRoot, httpPort));
+        ioExecutor.execute(() -> controller.start(context, serverIp, tftpRoot, httpRoot, httpPort));
     }
 
     @Override
