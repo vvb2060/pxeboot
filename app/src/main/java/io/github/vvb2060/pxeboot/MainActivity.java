@@ -169,7 +169,8 @@ public class MainActivity extends Activity implements ServerProcessController.Li
             stopButton.setEnabled(running);
             logView.setText(logText);
             logScroll.fullScroll(View.FOCUS_DOWN);
-            logView.postDelayed(() -> showRunningUi(running), logText.isEmpty() ? 0 : 3000);
+            var delay = running || logText.isEmpty() ? 0 : 3000;
+            logView.postDelayed(() -> showRunningUi(running), delay);
         });
     }
 

@@ -66,6 +66,7 @@ final class ServerProcessController {
                 appendLogLocked("Starting PXE Server failed: " + e.getMessage() + "\n");
                 clearProcessLocked();
                 notifyListenersLocked();
+                logBuffer.setLength(0);
             }
         }
     }
@@ -150,6 +151,7 @@ final class ServerProcessController {
             appendLogLocked("PXE Server has exited, exitCode=" + exitCode + "\n");
             clearProcessLocked();
             notifyListenersLocked();
+            logBuffer.setLength(0);
         }
     }
 
