@@ -1,13 +1,13 @@
 package io.github.vvb2060.pxeboot.server;
 
 import java.io.IOException;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.net.SocketException;
-import java.net.SocketTimeoutException;
+import java.nio.ByteBuffer;
+import java.nio.channels.DatagramChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,14 +34,13 @@ final class TftpServer {
     private static final int DEFAULT_WINDOW_SIZE = 1;
     private static final int MAX_WINDOW_SIZE = 8;
 
-    private static final int RX_BUFFER = 2048;
+    private static final int RX_BUFFER_SIZE = 2048;
     private static final int MAX_RETRIES = 3;
     private static final int SO_TIMEOUT_MS = 3000;
 
     private final InetAddress bindAddress;
     private final Path root;
     private final boolean verbose;
-    private DatagramSocket listener;
 
     TftpServer(AppConfig config) {
         this.bindAddress = config.serverIp;
@@ -54,304 +53,307 @@ final class TftpServer {
             throw new RuntimeException(root + " is not a directory");
         }
 
-        try (var listener = new DatagramSocket(new InetSocketAddress(bindAddress, 69))) {
-            this.listener = listener;
+        try (var selector = Selector.open();
+             var channel = DatagramChannel.open()) {
+            channel.bind(new InetSocketAddress(bindAddress, 69));
+            channel.configureBlocking(false);
+            channel.register(selector, SelectionKey.OP_READ, new ListenerHandler());
+
             System.out.printf("TFTP server listening on %s:69 (root=%s)\n", bindAddress, root);
 
-            byte[] rx = new byte[RX_BUFFER];
-            while (!Thread.currentThread().isInterrupted()) {
-                var packet = new DatagramPacket(rx, rx.length);
+            receivePacket(selector);
+        } catch (IOException e) {
+            throw new RuntimeException("TFTP server failed: " + e.getMessage(), e);
+        }
+    }
+
+    private void receivePacket(Selector selector) throws IOException {
+        var buffer = ByteBuffer.allocateDirect(RX_BUFFER_SIZE);
+        while (!Thread.currentThread().isInterrupted()) {
+            int ready = selector.select(3000);
+
+            long now = System.currentTimeMillis();
+            for (var key : selector.keys()) {
+                if (key.attachment() instanceof TransferSession session) {
+                    session.checkTimeout(now);
+                }
+            }
+
+            if (ready == 0) continue;
+            var keys = selector.selectedKeys().iterator();
+            while (keys.hasNext()) {
+                var key = keys.next();
+                keys.remove();
                 try {
-                    listener.receive(packet);
-                } catch (SocketException e) {
-                    if (listener.isClosed()) return;
-                    System.err.println("Socket receive failed: " + e.getMessage());
-                    continue;
-                }
-                handleInitialPacket(packet);
-            }
-        } catch (SocketException e) {
-            throw new RuntimeException("Unable to bind TFTP socket on port 69: " + e.getMessage(), e);
-        } catch (IOException e) {
-            throw new RuntimeException("TFTP listener failed: " + e.getMessage(), e);
-        } finally {
-            this.listener = null;
-        }
-    }
-
-    void close() {
-        if (listener != null) {
-            listener.close();
-        }
-    }
-
-    private void handleInitialPacket(DatagramPacket packet) {
-        byte[] data = packet.getData();
-        int len = packet.getLength();
-        if (len < 4) {
-            return;
-        }
-
-        int opcode = readU16(data, 0);
-        if (opcode != OP_RRQ) {
-            sendError(packet.getSocketAddress(), ERROR_ILLEGAL_OP, "Only RRQ is supported");
-            return;
-        }
-
-        RrqRequest rrq;
-        try {
-            rrq = parseRrq(data, len);
-        } catch (IllegalArgumentException ex) {
-            sendError(packet.getSocketAddress(), ERROR_ILLEGAL_OP, ex.getMessage());
-            return;
-        }
-
-        Thread worker = new Thread(() -> handleReadRequest(packet.getSocketAddress(), rrq),
-            "tftp-rrq-" + packet.getAddress().getHostAddress() + ":" + packet.getPort());
-        worker.setDaemon(true);
-        worker.start();
-    }
-
-    private void handleReadRequest(SocketAddress clientAddress, RrqRequest rrq) {
-        System.out.println(Thread.currentThread().getName() + " requested file: " + rrq.filename());
-        Path target;
-        try {
-            target = safeResolve(rrq.filename());
-        } catch (IllegalArgumentException ex) {
-            sendError(clientAddress, ERROR_ACCESS, ex.getMessage());
-            return;
-        }
-
-        if (!Files.exists(target) || !Files.isRegularFile(target)) {
-            sendError(clientAddress, ERROR_NOT_FOUND, "File not found: " + rrq.filename());
-            return;
-        }
-
-        long fileSize;
-        try {
-            fileSize = Files.size(target);
-        } catch (IOException e) {
-            sendError(clientAddress, ERROR_ACCESS, "Unable to access file");
-            return;
-        }
-
-        int blockSize = rrq.blockSize();
-        int windowSize = rrq.windowSize();
-
-        try (var transfer = new DatagramSocket()) {
-            transfer.setSoTimeout(SO_TIMEOUT_MS);
-
-            if (rrq.hasOptions()) {
-                if (!waitOackAck(transfer, clientAddress, rrq, fileSize)) {
-                    return;
+                    if (key.isValid() && key.isReadable()) {
+                        var handler = (ChannelHandler) key.attachment();
+                        handler.handleRead(key, buffer);
+                    }
+                } catch (IOException e) {
+                    System.err.printf("TFTP session error: %s\n", e.getMessage());
+                    key.cancel();
+                    try {
+                        key.channel().close();
+                    } catch (IOException ignored) {
+                    }
                 }
             }
-
-            byte[] content = Files.readAllBytes(target);
-            sendFile(transfer, clientAddress, content, blockSize, windowSize, rrq.filename());
-        } catch (SocketException e) {
-            System.err.println("TFTP transfer socket error: " + e.getMessage());
-        } catch (IOException e) {
-            System.err.println("TFTP transfer error: " + e.getMessage());
         }
     }
 
-    private void sendFile(
-        DatagramSocket transfer,
-        SocketAddress clientAddress,
-        byte[] content,
-        int blockSize,
-        int windowSize,
-        String fileName
-    ) throws IOException {
-        int offset = 0;
-        int block = 1;
-        boolean done = false;
-        var sentWindow = new ArrayList<DatagramPacket>(windowSize);
+    private interface ChannelHandler {
+        void handleRead(SelectionKey key, ByteBuffer buffer) throws IOException;
+    }
 
-        while (!done) {
-            sentWindow.clear();
-            int firstBlock = block;
-            int lastBlock = block - 1;
+    private class ListenerHandler implements ChannelHandler {
+        @Override
+        public void handleRead(SelectionKey key, ByteBuffer buffer) throws IOException {
+            var channel = (DatagramChannel) key.channel();
+            buffer.clear();
+            var clientAddress = channel.receive(buffer);
+            if (clientAddress == null) return;
 
-            for (int i = 0; i < windowSize; i++) {
-                int remaining = content.length - offset;
-                int payloadLen = Math.clamp(remaining, 0, blockSize);
+            buffer.flip();
+            if (buffer.remaining() < 4) return;
 
-                byte[] payload = new byte[4 + payloadLen];
-                writeU16(payload, 0, OP_DATA);
-                writeU16(payload, 2, block & 0xffff);
-                if (payloadLen > 0) {
-                    System.arraycopy(content, offset, payload, 4, payloadLen);
-                }
-
-                var packet = new DatagramPacket(payload, payload.length, clientAddress);
-                transfer.send(packet);
-                sentWindow.add(packet);
-                lastBlock = block;
-
-                if (verbose) {
-                    System.out.printf("TFTP DATA block=%d size=%d -> %s file=%s\n",
-                        block, payloadLen, clientAddress, fileName);
-                }
-
-                offset += payloadLen;
-                block = (block + 1) & 0xffff;
-
-                if (payloadLen < blockSize) {
-                    done = true;
-                    break;
-                }
-            }
-
-            if (!waitAckForWindow(transfer, clientAddress, firstBlock, lastBlock, sentWindow)) {
+            int opcode = Short.toUnsignedInt(buffer.getShort());
+            if (opcode != OP_RRQ) {
+                sendError(channel, clientAddress, ERROR_ILLEGAL_OP, "Only RRQ is supported");
                 return;
             }
+
+            try {
+                var rrq = parseRrq(buffer);
+                startTransfer(key, clientAddress, rrq);
+            } catch (IllegalArgumentException ex) {
+                sendError(channel, clientAddress, ERROR_ILLEGAL_OP, ex.getMessage());
+            }
         }
 
-        System.out.printf("TFTP transfer complete file=%s -> %s\n", fileName, clientAddress);
+        private void startTransfer(SelectionKey key, SocketAddress clientAddress, RrqRequest rrq) {
+            var channel = (DatagramChannel) key.channel();
+            var selector = key.selector();
+            try {
+                System.out.println("Requested file: " + rrq.filename());
+                Path target = safeResolve(rrq.filename());
+                if (!Files.exists(target) || !Files.isRegularFile(target)) {
+                    sendError(channel, clientAddress, ERROR_NOT_FOUND,
+                        "File not found: " + rrq.filename());
+                    return;
+                }
+
+                var fileContent = Files.readAllBytes(target);
+                var transferChannel = DatagramChannel.open();
+                transferChannel.configureBlocking(false);
+                var session = new TransferSession(transferChannel, clientAddress, rrq, fileContent);
+                transferChannel.register(selector, SelectionKey.OP_READ, session);
+
+                session.start();
+            } catch (IllegalArgumentException | IOException ex) {
+                sendError(channel, clientAddress, ERROR_ACCESS, ex.getMessage());
+            }
+        }
     }
 
-    private boolean waitAckForWindow(
-        DatagramSocket transfer,
-        SocketAddress clientAddress,
-        int firstBlock,
-        int lastBlock,
-        List<DatagramPacket> sentWindow
-    ) throws IOException {
-        int retries = 0;
-        while (retries < MAX_RETRIES) {
-            try {
-                byte[] rx = new byte[64];
-                var ack = new DatagramPacket(rx, rx.length);
-                transfer.receive(ack);
+    private class TransferSession implements ChannelHandler {
+        private final DatagramChannel channel;
+        private final SocketAddress clientAddress;
+        private final RrqRequest rrq;
+        private final byte[] fileContent;
+        private final int fileSize;
+        private final List<ByteBuffer> sentWindow;
 
-                if (!ack.getSocketAddress().equals(clientAddress)) {
-                    sendError(ack.getSocketAddress(), ERROR_UNKNOWN_TID, "Unknown transfer ID");
-                    continue;
+        private int block = 1;
+        private int fileOffset = 0;
+        private boolean eof = false;
+        private int firstBlockInWindow;
+        private int lastBlockInWindow;
+
+        private long lastActiveTime;
+        private int retries = 0;
+        private boolean waitingOackAck = false;
+
+        TransferSession(DatagramChannel channel, SocketAddress clientAddress,
+                        RrqRequest rrq, byte[] fileContent) {
+            this.channel = channel;
+            this.clientAddress = clientAddress;
+            this.rrq = rrq;
+            this.fileContent = fileContent;
+            this.fileSize = fileContent.length;
+            this.lastActiveTime = System.currentTimeMillis();
+            this.sentWindow = new ArrayList<>(rrq.windowSize());
+        }
+
+        void start() throws IOException {
+            if (rrq.hasOptions()) {
+                waitingOackAck = true;
+                sendOack();
+            } else {
+                sendNextWindow();
+            }
+        }
+
+        @Override
+        public void handleRead(SelectionKey key, ByteBuffer buffer) throws IOException {
+            buffer.clear();
+            var sender = channel.receive(buffer);
+            if (sender == null) return;
+
+            if (!sender.equals(clientAddress)) {
+                sendError(channel, sender, ERROR_UNKNOWN_TID, "Unknown transfer ID");
+                return;
+            }
+
+            buffer.flip();
+            if (buffer.remaining() < 4) return;
+
+            int opcode = Short.toUnsignedInt(buffer.getShort());
+            if (opcode == OP_ERROR) {
+                int errorCode = Short.toUnsignedInt(buffer.getShort());
+                String errorMsg = readZString(buffer);
+                System.err.printf("TFTP error from %s: code=%d message=%s\n",
+                    clientAddress, errorCode, errorMsg);
+                close();
+                return;
+            }
+
+            if (opcode == OP_ACK) {
+                int ackBlock = Short.toUnsignedInt(buffer.getShort());
+                lastActiveTime = System.currentTimeMillis();
+                retries = 0;
+
+                if (waitingOackAck && ackBlock == 0) {
+                    waitingOackAck = false;
+                    sendNextWindow();
+                    return;
                 }
 
-                int opcode = readU16(ack.getData(), 0);
-                if (opcode == OP_ERROR) {
-                    int errorCode = readU16(ack.getData(), 2);
-                    String errorMsg = readZString(ack.getData(), ack.getLength(), 4);
-                    System.err.printf("TFTP transfer error from %s: code=%d message=%s\n",
-                        clientAddress, errorCode, errorMsg);
-                    return false;
-                }
-                if (opcode == OP_ACK) {
-                    int ackBlock = readU16(ack.getData(), 2);
-                    if (inBlockRange(ackBlock, firstBlock, lastBlock)) {
-                        if (ackBlock == lastBlock) {
-                            if (verbose) {
-                                System.out.printf("TFTP ACK block=%d <- %s\n", ackBlock, clientAddress);
-                            }
-                            return true;
+                if (inBlockRange(ackBlock, firstBlockInWindow, lastBlockInWindow)) {
+                    if (verbose) {
+                        System.out.printf("TFTP ACK block=%d <- %s\n", ackBlock, clientAddress);
+                    }
+                    if (ackBlock == lastBlockInWindow) {
+                        if (eof) {
+                            System.out.printf("TFTP transfer complete file=%s -> %s\n",
+                                rrq.filename(), clientAddress);
+                            close();
                         } else {
-                            var ackedCount = (ackBlock - firstBlock + 1) & 0xFFFF;
-                            var lost = sentWindow.subList(ackedCount, sentWindow.size());
-                            for (var packet : lost) {
-                                transfer.send(packet);
-                            }
+                            sendNextWindow();
+                        }
+                    } else {
+                        int ackedCount = (ackBlock - firstBlockInWindow + 1) & 0xFFFF;
+                        for (int i = ackedCount; i < sentWindow.size(); i++) {
+                            var buf = sentWindow.get(i);
+                            buf.rewind();
+                            channel.send(buf, clientAddress);
                         }
                     }
                 }
-            } catch (SocketTimeoutException timeout) {
-                retries++;
-                for (var packet : sentWindow) {
-                    transfer.send(packet);
+            }
+        }
+
+        private void sendNextWindow() throws IOException {
+            sentWindow.clear();
+            firstBlockInWindow = block;
+
+            for (int i = 0; i < rrq.windowSize(); i++) {
+                int remaining = fileSize - fileOffset;
+                int payloadLen = Math.clamp(remaining, 0, rrq.blockSize());
+
+                var packet = ByteBuffer.allocateDirect(4 + payloadLen);
+                packet.putShort((short) OP_DATA);
+                packet.putShort((short) block);
+
+                if (payloadLen > 0) {
+                    packet.put(fileContent, fileOffset, payloadLen);
+                }
+
+                packet.flip();
+                channel.send(packet, clientAddress);
+                sentWindow.add(packet);
+                lastBlockInWindow = block;
+
+                if (verbose) {
+                    System.out.printf("TFTP DATA block=%d size=%d -> %s file=%s\n",
+                        block, payloadLen, clientAddress, rrq.filename());
+                }
+
+                fileOffset += payloadLen;
+                block = (block + 1) & 0xffff;
+
+                if (payloadLen < rrq.blockSize()) {
+                    eof = true;
+                    break;
                 }
             }
         }
 
-        System.err.printf("TFTP transfer timeout waiting ACK for blocks %d-%d\n", firstBlock, lastBlock);
-        return false;
-    }
+        private void sendOack() throws IOException {
+            var packet = ByteBuffer.allocateDirect(512);
+            packet.putShort((short) OP_OACK);
 
-    private boolean waitOackAck(DatagramSocket socket, SocketAddress clientAddress, RrqRequest rrq, long fileSize) throws IOException {
-        int retries = 0;
-        sendOack(socket, clientAddress, rrq, fileSize);
+            if (rrq.requestedTsize()) {
+                writeZString(packet, "tsize");
+                writeZString(packet, Integer.toString(fileSize));
+            }
+            if (rrq.requestedBlksize()) {
+                writeZString(packet, "blksize");
+                writeZString(packet, Integer.toString(rrq.blockSize()));
+            }
+            if (rrq.requestedWindowsize()) {
+                writeZString(packet, "windowsize");
+                writeZString(packet, Integer.toString(rrq.windowSize()));
+            }
 
-        while (retries < MAX_RETRIES) {
-            try {
-                byte[] rx = new byte[64];
-                DatagramPacket ack = new DatagramPacket(rx, rx.length);
-                socket.receive(ack);
+            packet.flip();
+            channel.send(packet, clientAddress);
+            sentWindow.clear();
+            sentWindow.add(packet);
 
-                if (!ack.getSocketAddress().equals(clientAddress)) {
-                    sendError(ack.getSocketAddress(), ERROR_UNKNOWN_TID, "Unknown transfer ID");
-                    continue;
-                }
+            System.out.printf("TFTP OACK -> %s (blksize=%d windowsize=%d tsize=%d)\n",
+                clientAddress, rrq.blockSize(), rrq.windowSize(), fileSize);
+        }
 
-                int opcode = readU16(ack.getData(), 0);
-                if (opcode == OP_ERROR) {
-                    int errorCode = readU16(ack.getData(), 2);
-                    String errorMsg = readZString(ack.getData(), ack.getLength(), 4);
-                    System.err.printf("TFTP OACK error from %s: code=%d message=%s\n",
-                        clientAddress, errorCode, errorMsg);
-                    return false;
-                }
-                if (opcode == OP_ACK) {
-                    if (readU16(ack.getData(), 2) == 0) {
-                        return true;
+        void checkTimeout(long now) {
+            if (now - lastActiveTime > SO_TIMEOUT_MS) {
+                retries++;
+                if (retries >= MAX_RETRIES) {
+                    System.err.printf("TFTP transfer timeout -> %s\n", clientAddress);
+                    close();
+                } else {
+                    lastActiveTime = now;
+                    try {
+                        for (var buf : sentWindow) {
+                            buf.rewind();
+                            channel.send(buf, clientAddress);
+                        }
+                    } catch (IOException e) {
+                        close();
                     }
                 }
-            } catch (SocketTimeoutException timeout) {
-                retries++;
-                sendOack(socket, clientAddress, rrq, fileSize);
             }
         }
 
-        System.err.printf("TFTP timeout waiting ACK for OACK from %s\n", clientAddress);
-        return false;
+        public void close() {
+            try {
+                channel.close();
+            } catch (IOException ignored) {
+            }
+        }
     }
 
-    private void sendOack(DatagramSocket socket, SocketAddress clientAddress, RrqRequest rrq, long fileSize)
-        throws IOException {
-        List<byte[]> fields = new ArrayList<>();
-        if (rrq.requestedTsize()) {
-            fields.add("tsize".getBytes(StandardCharsets.UTF_8));
-            fields.add(Long.toString(fileSize).getBytes(StandardCharsets.UTF_8));
-        }
-        if (rrq.requestedBlksize()) {
-            fields.add("blksize".getBytes(StandardCharsets.UTF_8));
-            fields.add(Integer.toString(rrq.blockSize()).getBytes(StandardCharsets.UTF_8));
-        }
-        if (rrq.requestedWindowsize()) {
-            fields.add("windowsize".getBytes(StandardCharsets.UTF_8));
-            fields.add(Integer.toString(rrq.windowSize()).getBytes(StandardCharsets.UTF_8));
-        }
-
-        int payloadLen = 2;
-        for (byte[] field : fields) {
-            payloadLen += field.length + 1;
-        }
-
-        byte[] payload = new byte[payloadLen];
-        writeU16(payload, 0, OP_OACK);
-        int pos = 2;
-        for (byte[] field : fields) {
-            System.arraycopy(field, 0, payload, pos, field.length);
-            pos += field.length;
-            payload[pos++] = 0;
-        }
-
-        socket.send(new DatagramPacket(payload, payload.length, clientAddress));
-        System.out.printf("TFTP OACK -> %s (blksize=%d windowsize=%d tsize=%d)\n",
-            clientAddress, rrq.blockSize(), rrq.windowSize(), fileSize);
-    }
-
-    private void sendError(SocketAddress address, int code, String message) {
-        try (var socket = new DatagramSocket()) {
-            byte[] msg = message.getBytes(StandardCharsets.UTF_8);
-            byte[] payload = new byte[4 + msg.length + 1];
-            writeU16(payload, 0, OP_ERROR);
-            writeU16(payload, 2, code);
-            System.arraycopy(msg, 0, payload, 4, msg.length);
-            payload[payload.length - 1] = 0;
-            socket.send(new DatagramPacket(payload, payload.length, address));
+    private static void sendError(DatagramChannel channel, SocketAddress address,
+                                  int code, String message) {
+        try {
+            var msgBytes = message.getBytes(StandardCharsets.UTF_8);
+            var buf = ByteBuffer.allocateDirect(4 + msgBytes.length + 1);
+            buf.putShort((short) OP_ERROR);
+            buf.putShort((short) code);
+            buf.put(msgBytes);
+            buf.put((byte) 0);
+            buf.flip();
+            channel.send(buf, address);
         } catch (IOException ignored) {
-            // Ignore send failures for best-effort error reporting.
         }
     }
 
@@ -364,30 +366,19 @@ final class TftpServer {
         return resolved;
     }
 
-    private static RrqRequest parseRrq(byte[] data, int len) {
-        int pos = 2;
-        String filename = readZString(data, len, pos);
-        pos += filename.length() + 1;
-
-        if (pos >= len) {
+    private static RrqRequest parseRrq(ByteBuffer buffer) {
+        String filename = readZString(buffer);
+        if (!buffer.hasRemaining() || filename.isEmpty()) {
             throw new IllegalArgumentException("Malformed RRQ packet");
         }
 
-        String mode = readZString(data, len, pos);
-        pos += mode.length() + 1;
+        String mode = readZString(buffer);
 
         var options = new LinkedHashMap<String, String>();
-        while (pos < len) {
-            String key = readZString(data, len, pos);
-            pos += key.length() + 1;
-            if (key.isEmpty()) {
-                break;
-            }
-            if (pos >= len) {
-                break;
-            }
-            String value = readZString(data, len, pos);
-            pos += value.length() + 1;
+        while (buffer.hasRemaining()) {
+            String key = readZString(buffer);
+            if (key.isEmpty() || !buffer.hasRemaining()) break;
+            String value = readZString(buffer);
             options.put(key.toLowerCase(Locale.ROOT), value);
         }
 
@@ -400,7 +391,6 @@ final class TftpServer {
 
         return new RrqRequest(
             filename,
-            mode,
             options.containsKey("tsize"),
             options.containsKey("blksize"),
             options.containsKey("windowsize"),
@@ -431,31 +421,28 @@ final class TftpServer {
         return block >= start || block <= end;
     }
 
-    private static String readZString(byte[] data, int len, int pos) {
-        if (pos >= len) {
-            return "";
+    private static String readZString(ByteBuffer buffer) {
+        int start = buffer.position();
+        while (true) {
+            if (!buffer.hasRemaining() || buffer.get() == 0) break;
         }
-        int end = pos;
-        while (end < len && data[end] != 0) {
-            end++;
-        }
-        return new String(data, pos, end - pos, StandardCharsets.UTF_8);
+        int len = buffer.position() - start - 1;
+        if (len <= 0) return "";
+
+        byte[] strBytes = new byte[len];
+        buffer.position(start);
+        buffer.get(strBytes);
+        buffer.get();
+        return new String(strBytes, StandardCharsets.UTF_8);
     }
 
-    private static int readU16(byte[] data, int pos) {
-        int hi = Byte.toUnsignedInt(data[pos]);
-        int lo = Byte.toUnsignedInt(data[pos + 1]);
-        return (hi << 8) | lo;
-    }
-
-    private static void writeU16(byte[] data, int pos, int value) {
-        data[pos] = (byte) ((value >>> 8) & 0xff);
-        data[pos + 1] = (byte) (value & 0xff);
+    private static void writeZString(ByteBuffer buffer, String str) {
+        buffer.put(str.getBytes(StandardCharsets.UTF_8));
+        buffer.put((byte) 0);
     }
 
     private record RrqRequest(
         String filename,
-        String mode,
         boolean requestedTsize,
         boolean requestedBlksize,
         boolean requestedWindowsize,

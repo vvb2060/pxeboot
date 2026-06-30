@@ -16,8 +16,7 @@ final class ServerRuntime {
     }
 
     void start() {
-        startThread("dhcp-offer", dhcpServer::serveOffer);
-        startThread("proxydhcp-ack", dhcpServer::serveProxy);
+        startThread("dhcp-server", dhcpServer::start);
         startThread("tftp-server", tftpServer::start);
         startThread("http-server", httpFileServer::start);
     }
@@ -42,8 +41,6 @@ final class ServerRuntime {
     }
 
     void stop() {
-        dhcpServer.close();
-        tftpServer.close();
         for (var thread : threads) {
             thread.interrupt();
         }

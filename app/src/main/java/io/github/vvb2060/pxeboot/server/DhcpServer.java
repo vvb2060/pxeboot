@@ -2,11 +2,13 @@ package io.github.vvb2060.pxeboot.server;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.net.SocketException;
+import java.net.StandardSocketOptions;
+import java.nio.ByteBuffer;
+import java.nio.channels.DatagramChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 import java.util.Arrays;
 import java.util.Optional;
 
@@ -15,107 +17,92 @@ final class DhcpServer {
 
     private final AppConfig config;
 
-    private DatagramSocket offerSocket;
-    private DatagramSocket proxySocket;
-
     DhcpServer(AppConfig config) {
         this.config = config;
     }
 
-    void serveOffer() {
-        InetSocketAddress addr;
-        if (File.pathSeparatorChar == ';') {
-            addr = new InetSocketAddress(config.serverIp, 67);
-        } else {
-            addr = new InetSocketAddress(67);
-        }
-        try (var socket = new DatagramSocket(addr)) {
-            offerSocket = socket;
-            socket.setBroadcast(true);
-            socket.setReuseAddress(true);
-            runLoop(socket, false);
-        } catch (SocketException e) {
-            throw new RuntimeException("Unable to bind DHCP socket on port 67: " + e.getMessage(), e);
-        } finally {
-            offerSocket = null;
+    void start() {
+        try (var sel = Selector.open();
+             var offer = DatagramChannel.open();
+             var proxy = DatagramChannel.open()) {
+            InetSocketAddress offerAddr;
+            if (File.pathSeparatorChar == ';') {
+                offerAddr = new InetSocketAddress(config.serverIp, 67);
+            } else {
+                offerAddr = new InetSocketAddress(67);
+            }
+            offer.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+            offer.setOption(StandardSocketOptions.SO_BROADCAST, true);
+            offer.bind(offerAddr);
+            offer.configureBlocking(false);
+            offer.register(sel, SelectionKey.OP_READ, false);
+
+            var proxyAddr = new InetSocketAddress(config.serverIp, 4011);
+            proxy.bind(proxyAddr);
+            proxy.configureBlocking(false);
+            proxy.register(sel, SelectionKey.OP_READ, true);
+
+            System.out.printf("DHCP server listening on %s and %s\n", offerAddr, proxyAddr);
+
+            receivePacket(sel);
+        } catch (IOException e) {
+            throw new RuntimeException("DHCP server error: " + e.getMessage(), e);
         }
     }
 
-    void serveProxy() {
-        try (var socket = new DatagramSocket(new InetSocketAddress(config.serverIp, 4011))) {
-            proxySocket = socket;
-            runLoop(socket, true);
-        } catch (SocketException e) {
-            throw new RuntimeException("Unable to bind ProxyDHCP socket on port 4011: " + e.getMessage(), e);
-        } finally {
-            proxySocket = null;
-        }
-    }
-
-    void close() {
-        if (offerSocket != null) {
-            offerSocket.close();
-        }
-        if (proxySocket != null) {
-            proxySocket.close();
-        }
-    }
-
-    private void runLoop(DatagramSocket socket, boolean proxy) {
-        byte[] buffer = new byte[2048];
-
+    private void receivePacket(Selector sel) throws IOException {
+        var buffer = ByteBuffer.allocateDirect(2048);
         while (!Thread.currentThread().isInterrupted()) {
-            var datagram = new DatagramPacket(buffer, buffer.length);
-            try {
-                socket.receive(datagram);
-            } catch (IOException e) {
-                if (socket.isClosed()) return;
-                System.err.println("Socket receive failed: " + e.getMessage());
-                continue;
-            }
-
-            DhcpPacket request;
-            try {
-                request = DhcpPacket.parse(datagram.getData(), datagram.getLength());
-            } catch (IllegalArgumentException e) {
-                System.out.println("Ignored non-DHCP packet: " + e.getMessage());
-                continue;
-            }
-
-            if (request.op != DhcpPacket.BOOT_REQUEST) {
-                continue;
-            }
-
-            String vendorClass = request.vendorClass().orElse("");
-            if (!vendorClass.startsWith("PXEClient")) {
-                System.out.printf("Ignored request xid=0x%08x: vendorClass=%s\n",
-                    request.xid, vendorClass);
-                continue;
-            }
-
-            var msgTypeOpt = request.messageType();
-            if (msgTypeOpt.isEmpty()) {
-                continue;
-            }
-            int msgType = msgTypeOpt.get();
-            if (!proxy && msgType == DhcpPacket.MSG_DISCOVER) {
-                sendOffer(socket, request);
-                continue;
-            }
-
-            if (proxy && msgType == DhcpPacket.MSG_REQUEST) {
-                var profile = classifyClient(request);
-                if (profile.isEmpty()) {
-                    System.out.printf("Ignored request xid=0x%08x: vendorClass=%s\n",
-                        request.xid, vendorClass);
-                    continue;
-                }
-                sendProxyAck(socket, request, datagram.getSocketAddress(), profile.get());
+            sel.select();
+            var keys = sel.selectedKeys().iterator();
+            while (keys.hasNext()) {
+                var key = keys.next();
+                keys.remove();
+                if (!key.isValid() || !key.isReadable()) continue;
+                var channel = (DatagramChannel) key.channel();
+                boolean isProxy = (Boolean) key.attachment();
+                buffer.clear();
+                var sender = channel.receive(buffer);
+                if (sender == null) continue;
+                buffer.flip();
+                handlePacket(channel, buffer, sender, isProxy);
             }
         }
     }
 
-    private void sendOffer(DatagramSocket socket, DhcpPacket request) {
+    private void handlePacket(DatagramChannel channel, ByteBuffer data,
+                              SocketAddress sender, boolean proxy) {
+        DhcpPacket request;
+        try {
+            request = DhcpPacket.parse(data);
+        } catch (IllegalArgumentException e) {
+            System.out.println("Ignored non-DHCP packet: " + e.getMessage());
+            return;
+        }
+
+        if (request.op != DhcpPacket.BOOT_REQUEST) {
+            return;
+        }
+
+        var profile = classifyClient(request);
+        if (profile.isEmpty()) return;
+
+        var msgTypeOpt = request.messageType();
+        if (msgTypeOpt.isEmpty()) {
+            return;
+        }
+        int msgType = msgTypeOpt.get();
+        if (!proxy && msgType == DhcpPacket.MSG_DISCOVER) {
+            sendOffer(channel, request);
+            return;
+        }
+
+        if (proxy && msgType == DhcpPacket.MSG_REQUEST) {
+            sendProxyAck(channel, request, sender, profile.get());
+        }
+    }
+
+    private void sendOffer(DatagramChannel channel, DhcpPacket request) {
         DhcpPacket offer = new DhcpPacket();
         fillCommonReply(offer, request);
 
@@ -129,13 +116,13 @@ final class DhcpServer {
         request.option(DhcpPacket.OPTION_CLIENT_UUID)
             .ifPresent(value -> offer.options.put(DhcpPacket.OPTION_CLIENT_UUID, value));
 
-        byte[] payload = offer.encode(DHCP_MIN_PACKET_SIZE);
+        var payload = offer.encode(DHCP_MIN_PACKET_SIZE);
         var address = new InetSocketAddress("255.255.255.255", 68);
-        send(socket, payload, address, request.xid, "OFFER");
+        send(channel, payload, address, request.xid, "OFFER");
     }
 
     private void sendProxyAck(
-        DatagramSocket socket,
+        DatagramChannel channel,
         DhcpPacket request,
         SocketAddress address,
         ClientProfile profile
@@ -160,24 +147,27 @@ final class DhcpServer {
         request.option(DhcpPacket.OPTION_CLIENT_UUID)
             .ifPresent(value -> ack.options.put(DhcpPacket.OPTION_CLIENT_UUID, value));
 
-        byte[] payload = ack.encode(DHCP_MIN_PACKET_SIZE);
+        var payload = ack.encode(DHCP_MIN_PACKET_SIZE);
         String ackKind = "ACK-" + profile.label;
-        send(socket, payload, address, request.xid, ackKind);
+        send(channel, payload, address, request.xid, ackKind);
     }
 
     private Optional<ClientProfile> classifyClient(DhcpPacket request) {
-        int arch = request.clientArchitecture().orElse(-1);
-        boolean ipxeRequest = request.userClass().map("iPXE"::equals).orElse(false);
-        if (arch == 7) {
-            return Optional.of(ClientProfile.UEFI_PXE_x64);
+        String vendorClass = request.vendorClass().orElse("");
+        if (vendorClass.startsWith("PXEClient")) {
+            int arch = request.clientArchitecture().orElse(-1);
+            boolean ipxeRequest = request.userClass().map("iPXE"::equals).orElse(false);
+            if (arch == 7) {
+                return Optional.of(ClientProfile.UEFI_PXE_x64);
+            }
+            if (arch == 11) {
+                return Optional.of(ClientProfile.UEFI_PXE_ARM);
+            }
+            if (arch == 0) {
+                return Optional.of(ipxeRequest ? ClientProfile.BIOS_iPXE : ClientProfile.BIOS_PXE);
+            }
         }
-        if (arch == 11) {
-            return Optional.of(ClientProfile.UEFI_PXE_ARM);
-        }
-        if (arch == 0) {
-            return Optional.of(ipxeRequest ? ClientProfile.BIOS_iPXE : ClientProfile.BIOS_PXE);
-        }
-
+        System.out.printf("Ignored request xid=0x%08x: vendorClass=%s\n", request.xid, vendorClass);
         return Optional.empty();
     }
 
@@ -192,11 +182,10 @@ final class DhcpServer {
         reply.chaddr = Arrays.copyOf(request.chaddr, request.chaddr.length);
     }
 
-    private void send(DatagramSocket socket, byte[] payload, SocketAddress address, int xid, String kind) {
+    private void send(DatagramChannel channel, ByteBuffer payload, SocketAddress address, int xid, String kind) {
         try {
-            DatagramPacket response = new DatagramPacket(payload, payload.length, address);
-            socket.send(response);
-            System.out.printf("Sent %s xid=0x%08x -> %s (%d bytes)\n", kind, xid, address, payload.length);
+            channel.send(payload, address);
+            System.out.printf("Sent %s xid=0x%08x -> %s (%d bytes)\n", kind, xid, address, payload.capacity());
         } catch (IOException e) {
             System.err.printf("Failed to send %s xid=0x%08x: %s\n", kind, xid, e.getMessage());
         }

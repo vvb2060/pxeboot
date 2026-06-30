@@ -50,13 +50,13 @@ final class HttpFileServer {
             server.configureBlocking(false);
             server.register(selector, SelectionKey.OP_ACCEPT);
 
-            System.out.printf("HTTP file server listening on %s:%d (root=%s)\n", bindAddress, port, root);
+            System.out.printf("HTTP server listening on %s:%d (root=%s)\n", bindAddress, port, root);
 
             while (!Thread.currentThread().isInterrupted()) {
                 selector.select();
                 var keys = selector.selectedKeys().iterator();
                 while (keys.hasNext()) {
-                    SelectionKey key = keys.next();
+                    var key = keys.next();
                     keys.remove();
 
                     if (!key.isValid()) {
@@ -401,7 +401,7 @@ final class HttpFileServer {
     }
 
     private static final class ClientContext implements AutoCloseable {
-        final ByteBuffer readBuffer = ByteBuffer.allocate(BUFFER_SIZE);
+        final ByteBuffer readBuffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
         final ByteArrayOutputStream headerStream = new ByteArrayOutputStream(BUFFER_SIZE);
 
         ByteBuffer responseHeaderBuffer;

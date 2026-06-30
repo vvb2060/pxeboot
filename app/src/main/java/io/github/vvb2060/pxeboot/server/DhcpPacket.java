@@ -48,12 +48,11 @@ final class DhcpPacket {
 
     final Map<Integer, byte[]> options = new LinkedHashMap<>();
 
-    static DhcpPacket parse(byte[] packetData, int length) {
-        if (length < 240) {
+    static DhcpPacket parse(ByteBuffer buf) {
+        if (buf.remaining() < 240) {
             throw new IllegalArgumentException("Packet too short to be DHCP/BOOTP");
         }
 
-        ByteBuffer buf = ByteBuffer.wrap(packetData, 0, length);
         DhcpPacket p = new DhcpPacket();
 
         p.op = Byte.toUnsignedInt(buf.get());
@@ -101,7 +100,7 @@ final class DhcpPacket {
         return p;
     }
 
-    byte[] encode(int minLength) {
+    ByteBuffer encode(int minLength) {
         int optionsLength = 0;
         for (byte[] value : options.values()) {
             optionsLength += 2 + value.length;
@@ -109,7 +108,7 @@ final class DhcpPacket {
         optionsLength += 1; // End option
 
         int totalLength = Math.max(240 + optionsLength, minLength);
-        ByteBuffer buf = ByteBuffer.allocate(totalLength);
+        var buf = ByteBuffer.allocateDirect(totalLength);
 
         buf.put((byte) op);
         buf.put((byte) htype);
@@ -139,7 +138,8 @@ final class DhcpPacket {
 
         buf.put((byte) OPTION_END);
 
-        return buf.array();
+        buf.flip();
+        return buf;
     }
 
     Optional<Integer> messageType() {
