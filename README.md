@@ -18,12 +18,12 @@ The app is **not** a full DHCP server. It listens for DHCP traffic and responds 
 4. Verify that the gateway does **not** enable AP isolation or DHCP anti-spoofing / DHCP protection features that would block DHCP listening behavior.
 5. Verify that the gateway or firewall does not block the ports used by the app:
 
-| Protocol | Port | Purpose           |
-| --- |------|------------------------|
-| UDP | 67   | DHCP request listening |
-| UDP | 69   | TFTP                   |
-| TCP | 80   | HTTP                   |
-| UDP | 4011 | ProxyDHCP              |
+| Protocol | Port | Purpose                |
+|----------|------|------------------------|
+| UDP      | 67   | DHCP request listening |
+| UDP      | 69   | TFTP                   |
+| TCP      | 80   | HTTP                   |
+| UDP      | 4011 | ProxyDHCP              |
 
 The HTTP port is configurable. UDP ports `67` and `69` require [privileged access](https://issuetracker.google.com/issues/218578943), so the Android device must be rooted.
 
